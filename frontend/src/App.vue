@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ConnectError, Code } from '@connectrpc/connect';
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
 import {
   createListItemsRequest,
   type Item,
@@ -10,6 +10,10 @@ import { create, type MessageInitShape } from '@bufbuild/protobuf';
 import {
   EditItemRequestSchema,
   type EditItemRequest,
+  CreateItemRequestSchema,
+  type CreateItemRequest,
+  DeleteItemRequestSchema,
+  type DeleteItemRequest,
 } from './gen/sickrock_pb';
 import { createSickRockClient } from './lib/sickrockClient';
 
@@ -32,7 +36,16 @@ const isLoading = ref(false);
 const errorMessage = ref<string | null>(null);
 const showConnectionUI = ref(true);
 const editingItem = ref<Item | null>(null);
+const itemNameInput = ref('');
+const itemNameInputRef = ref<HTMLInputElement | null>(null);
 const feelingInput = ref('');
+const feelingInputRef = ref<HTMLInputElement | null>(null);
+const showCreateDialog = ref(false);
+const newItemName = ref('');
+const newItemFeeling = ref('');
+const newItemNameInputRef = ref<HTMLInputElement | null>(null);
+const itemToDelete = ref<Item | null>(null);
+const showDeleteConfirmation = ref(false);
 const REFRESH_INTERVAL_SECONDS = 30;
 const refreshCountdown = ref(REFRESH_INTERVAL_SECONDS);
 let refreshTimer: ReturnType<typeof setInterval> | null = null;
@@ -156,6 +169,48 @@ const getItemName = (item: Item): string => {
 
   return 'Untitled task';
 };
+
+const getItemSuggestion = (item: Item): string | null => {
+  const fields = item.additionalFields ?? {};
+  const suggestion = fields.suggestion || fields.Suggestion;
+  if (typeof suggestion === 'string' && suggestion.trim().length > 0) {
+    return suggestion.trim();
+  }
+  return null;
+};
+
+const isItemRecentlyUpdated = (item: Item): boolean => {
+  const fields = item.additionalFields ?? {};
+  const lastUpdate = fields.last_human_update;
+  
+  if (!lastUpdate || typeof lastUpdate !== 'string') {
+    return false;
+  }
+
+  try {
+    // Parse the timestamp format: "YYYY-MM-DD HH:MM:SS"
+    const [datePart, timePart] = lastUpdate.trim().split(' ');
+    if (!datePart || !timePart) {
+      return false;
+    }
+    
+    const [year, month, day] = datePart.split('-').map(Number);
+    const [hours, minutes, seconds] = timePart.split(':').map(Number);
+    
+    const updateDate = new Date(year, month - 1, day, hours, minutes, seconds);
+    const now = new Date();
+    const diffMs = now.getTime() - updateDate.getTime();
+    const diffMinutes = diffMs / (1000 * 60);
+    
+    return diffMinutes < 15;
+  } catch {
+    return false;
+  }
+};
+
+const filteredStatusItems = computed(() => {
+  return statusItems.value.filter((item) => !isItemRecentlyUpdated(item));
+});
 
 const attemptInitialInit = async (): Promise<boolean> => {
   if (!token.value) {
@@ -336,13 +391,102 @@ const createEditItemRequest = (
   init: MessageInitShape<typeof EditItemRequestSchema> = {},
 ) => create(EditItemRequestSchema, init);
 
+const createCreateItemRequest = (
+  init: MessageInitShape<typeof CreateItemRequestSchema> = {},
+) => create(CreateItemRequestSchema, init);
+
+const createDeleteItemRequest = (
+  init: MessageInitShape<typeof DeleteItemRequestSchema> = {},
+) => create(DeleteItemRequestSchema, init);
+
 const handleItemClick = (item: Item) => {
   editingItem.value = item;
+  itemNameInput.value = getItemName(item);
   feelingInput.value = item.additionalFields?.feeling || '';
+};
+
+const handleItemRightClick = (event: MouseEvent, item: Item) => {
+  event.preventDefault();
+  itemToDelete.value = item;
+  showDeleteConfirmation.value = true;
+};
+
+const cancelDelete = () => {
+  itemToDelete.value = null;
+  showDeleteConfirmation.value = false;
+};
+
+const confirmDelete = async () => {
+  if (!itemToDelete.value) return;
+
+  const item = itemToDelete.value;
+  isLoading.value = true;
+  errorMessage.value = null;
+
+  try {
+    const sanitizedUsername = username.value.trim();
+    const sanitizedPassword = password.value;
+
+    const credentials = needsAuth.value
+      ? {
+          username: sanitizedUsername,
+          password: sanitizedPassword,
+        }
+      : undefined;
+
+    let client = createSickRockClient(
+      needsAuth.value ? effectiveBaseUrl.value : undefined,
+      credentials,
+      token.value,
+    );
+
+    if (needsAuth.value && credentials && !token.value) {
+      const loginResponse = await client.login({
+        username: credentials.username,
+        password: credentials.password,
+      });
+
+      if (!loginResponse.token) {
+        throw new Error('Login response did not return a token.');
+      }
+
+      token.value = loginResponse.token;
+      client = createSickRockClient(
+        effectiveBaseUrl.value,
+        credentials,
+        token.value,
+      );
+    }
+
+    const request = createDeleteItemRequest({
+      id: item.id,
+      pageId: 'status',
+    });
+
+    await client.deleteItem(request);
+    
+    // Remove the deleted item from the list
+    const itemIndex = statusItems.value.findIndex((i) => i.id === item.id);
+    if (itemIndex !== -1) {
+      statusItems.value.splice(itemIndex, 1);
+    }
+    
+    cancelDelete();
+    await refreshStatusItems();
+  } catch (error) {
+    if (error instanceof Error) {
+      errorMessage.value = error.message;
+    } else {
+      errorMessage.value = String(error);
+    }
+  } finally {
+    isLoading.value = false;
+  }
 };
 
 const cancelEdit = () => {
   editingItem.value = null;
+  itemNameInput.value = '';
   feelingInput.value = '';
 };
 
@@ -388,19 +532,139 @@ const saveItem = async () => {
       );
     }
 
+    const now = new Date();
+    const year = now.getFullYear();
+    const month = String(now.getMonth() + 1).padStart(2, '0');
+    const day = String(now.getDate()).padStart(2, '0');
+    const hours = String(now.getHours()).padStart(2, '0');
+    const minutes = String(now.getMinutes()).padStart(2, '0');
+    const seconds = String(now.getSeconds()).padStart(2, '0');
+    const formattedTimestamp = `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
+
+    const additionalFields: { [key: string]: string } = {
+      ...item.additionalFields,
+      feeling: feelingInput.value,
+      last_human_update: formattedTimestamp,
+    };
+
+    // Update the name field
+    const nameValue = itemNameInput.value.trim();
+    if (nameValue) {
+      additionalFields.name = nameValue;
+    }
+
     const request = createEditItemRequest({
       id: item.id,
       pageId: 'status',
-      additionalFields: {
-        ...item.additionalFields,
-        feeling: feelingInput.value,
-      },
+      additionalFields,
     });
 
     await client.editItem(request);
     
+    // Remove the updated item from the list
+    const itemIndex = statusItems.value.findIndex((i) => i.id === item.id);
+    if (itemIndex !== -1) {
+      statusItems.value.splice(itemIndex, 1);
+    }
+    
     editingItem.value = null;
+    itemNameInput.value = '';
     feelingInput.value = '';
+  } catch (error) {
+    if (error instanceof Error) {
+      errorMessage.value = error.message;
+    } else {
+      errorMessage.value = String(error);
+    }
+  } finally {
+    isLoading.value = false;
+  }
+};
+
+const handleEscapeKey = (event: KeyboardEvent) => {
+  if (event.key === 'Escape') {
+    if (editingItem.value) {
+      cancelEdit();
+    } else if (showCreateDialog.value) {
+      cancelCreate();
+    } else if (showDeleteConfirmation.value) {
+      cancelDelete();
+    }
+  }
+};
+
+const openCreateDialog = () => {
+  showCreateDialog.value = true;
+  newItemName.value = '';
+  newItemFeeling.value = '';
+};
+
+const cancelCreate = () => {
+  showCreateDialog.value = false;
+  newItemName.value = '';
+  newItemFeeling.value = '';
+};
+
+const createItem = async () => {
+  if (!newItemName.value.trim()) {
+    errorMessage.value = 'Item name is required.';
+    return;
+  }
+
+  isLoading.value = true;
+  errorMessage.value = null;
+
+  try {
+    const sanitizedUsername = username.value.trim();
+    const sanitizedPassword = password.value;
+
+    const credentials = needsAuth.value
+      ? {
+          username: sanitizedUsername,
+          password: sanitizedPassword,
+        }
+      : undefined;
+
+    let client = createSickRockClient(
+      needsAuth.value ? effectiveBaseUrl.value : undefined,
+      credentials,
+      token.value,
+    );
+
+    if (needsAuth.value && credentials && !token.value) {
+      const loginResponse = await client.login({
+        username: credentials.username,
+        password: credentials.password,
+      });
+
+      if (!loginResponse.token) {
+        throw new Error('Login response did not return a token.');
+      }
+
+      token.value = loginResponse.token;
+      client = createSickRockClient(
+        effectiveBaseUrl.value,
+        credentials,
+        token.value,
+      );
+    }
+
+    const additionalFields: { [key: string]: string } = {
+      name: newItemName.value.trim(),
+    };
+
+    if (newItemFeeling.value.trim()) {
+      additionalFields.feeling = newItemFeeling.value.trim();
+    }
+
+    const request = createCreateItemRequest({
+      pageId: 'status',
+      additionalFields,
+    });
+
+    await client.createItem(request);
+    
+    cancelCreate();
     await refreshStatusItems();
   } catch (error) {
     if (error instanceof Error) {
@@ -412,6 +676,34 @@ const saveItem = async () => {
     isLoading.value = false;
   }
 };
+
+watch(editingItem, async (isEditing) => {
+  if (isEditing) {
+    window.addEventListener('keydown', handleEscapeKey);
+    await nextTick();
+    itemNameInputRef.value?.focus();
+  } else {
+    window.removeEventListener('keydown', handleEscapeKey);
+  }
+});
+
+watch(showCreateDialog, async (isShowing) => {
+  if (isShowing) {
+    window.addEventListener('keydown', handleEscapeKey);
+    await nextTick();
+    newItemNameInputRef.value?.focus();
+  } else {
+    window.removeEventListener('keydown', handleEscapeKey);
+  }
+});
+
+watch(showDeleteConfirmation, (isShowing) => {
+  if (isShowing) {
+    window.addEventListener('keydown', handleEscapeKey);
+  } else {
+    window.removeEventListener('keydown', handleEscapeKey);
+  }
+});
 
 onMounted(async () => {
   let refreshedViaInit = false;
@@ -425,6 +717,7 @@ onMounted(async () => {
 
 onUnmounted(() => {
   clearAutoRefresh();
+  window.removeEventListener('keydown', handleEscapeKey);
 });
 </script>
 
@@ -438,6 +731,8 @@ onUnmounted(() => {
       role="img"
       aria-labelledby="title desc"
       class="logo"
+      @click="openCreateDialog"
+      style="cursor: pointer;"
     >
       <title id="title">Otto personal assistant logo</title>
       <desc id="desc">A bold circular badge with a friendly, centered robot face and a soft steel-blue palette.</desc>
@@ -487,16 +782,25 @@ onUnmounted(() => {
     <section class="card results-card">
       <p v-if="isLoading" class="info">Loading…</p>
       <p v-else-if="errorMessage" class="error">Request failed: {{ errorMessage }}</p>
-      <ol v-else-if="statusItems.length" class="items-list">
+      <ol v-else-if="filteredStatusItems.length" class="items-list">
         <li
-          v-for="(item, index) in statusItems"
+          v-for="(item, index) in filteredStatusItems"
           :key="item.id || index"
           :class="['items-list-entry', getKarmaClass(item)]"
           @click="handleItemClick(item)"
+          @contextmenu="handleItemRightClick($event, item)"
         >
           <span class="item-marker" aria-hidden="true" />
           <div class="item-body">
-            <span class="item-name">{{ getItemName(item) }}</span>
+            <div class="item-content">
+              <span class="item-name">{{ getItemName(item) }}</span>
+              <span
+                v-if="getItemSuggestion(item) !== null"
+                class="item-suggestion"
+              >
+                {{ getItemSuggestion(item) }}
+              </span>
+            </div>
             <span
               v-if="getKarmaLabel(item) !== null"
               class="item-karma"
@@ -507,29 +811,94 @@ onUnmounted(() => {
           </div>
         </li>
       </ol>
-      <p v-else class="info">No items returned.</p>
+      <p v-else-if="statusItems.length === 0" class="info">No items returned.</p>
+      <p v-else class="info">All items have been recently updated.</p>
     </section>
-    <div v-if="editingItem" class="edit-modal-overlay" @click.self="cancelEdit">
+    <div
+      v-if="editingItem"
+      class="edit-modal-overlay"
+      @click.self="cancelEdit"
+    >
       <div class="edit-modal">
         <h3>Update Item</h3>
         <div class="field">
-          <label class="field-label" for="feeling-input">Feeling</label>
           <input
-            id="feeling-input"
-            v-model="feelingInput"
+            id="item-name-input"
+            ref="itemNameInputRef"
+            v-model="itemNameInput"
             class="base-url-input"
             type="text"
-            placeholder="Enter feeling"
+            placeholder="Item name"
             :disabled="isLoading"
             @keyup.enter="saveItem"
             @keyup.esc="cancelEdit"
           />
         </div>
+        <div class="field">
+          <input
+            id="feeling-input"
+            ref="feelingInputRef"
+            v-model="feelingInput"
+            class="base-url-input"
+            type="text"
+            placeholder="Feeling"
+            :disabled="isLoading"
+            @keyup.enter="saveItem"
+            @keyup.esc="cancelEdit"
+          />
+        </div>
+      </div>
+    </div>
+    <div
+      v-if="showCreateDialog"
+      class="edit-modal-overlay"
+      @click.self="cancelCreate"
+    >
+      <div class="edit-modal">
+        <h3>Create</h3>
+        <div class="field">
+          <input
+            id="new-item-name-input"
+            ref="newItemNameInputRef"
+            v-model="newItemName"
+            class="base-url-input"
+            type="text"
+            placeholder="Item name"
+            :disabled="isLoading"
+            @keyup.enter="createItem"
+            @keyup.esc="cancelCreate"
+          />
+        </div>
+        <div class="field">
+          <input
+            id="new-item-feeling-input"
+            v-model="newItemFeeling"
+            class="base-url-input"
+            type="text"
+            placeholder="Feeling (optional)"
+            :disabled="isLoading"
+            @keyup.enter="createItem"
+            @keyup.esc="cancelCreate"
+          />
+        </div>
+      </div>
+    </div>
+    <div
+      v-if="showDeleteConfirmation"
+      class="edit-modal-overlay"
+      @click.self="cancelDelete"
+    >
+      <div class="edit-modal">
+        <h3>Delete Item</h3>
+        <p v-if="itemToDelete" class="delete-confirmation-text">
+          Are you sure you want to delete "{{ getItemName(itemToDelete) }}"?
+        </p>
+        <p class="delete-warning">This action cannot be undone.</p>
         <div class="actions">
-          <button type="button" :disabled="isLoading" @click="saveItem">
-            {{ isLoading ? 'Saving…' : 'Save' }}
+          <button type="button" class="danger" :disabled="isLoading" @click="confirmDelete">
+            {{ isLoading ? 'Deleting…' : 'Delete' }}
           </button>
-          <button type="button" class="secondary" :disabled="isLoading" @click="cancelEdit">
+          <button type="button" class="secondary" :disabled="isLoading" @click="cancelDelete">
             Cancel
           </button>
         </div>
@@ -653,6 +1022,12 @@ onUnmounted(() => {
   width: 320px;
   height: auto;
   margin: 0 auto;
+  transition: transform 0.2s ease, filter 0.2s ease;
+}
+
+.logo:hover {
+  transform: scale(1.05);
+  filter: brightness(1.1);
 }
  
 .base-url-form {
@@ -679,11 +1054,12 @@ onUnmounted(() => {
 }
 
 .base-url-input {
-  width: 100%;
   padding: 0.6rem 0.75rem;
   border: 1px solid rgba(15, 23, 42, 0.15);
   border-radius: 0.75rem;
   font-size: 1rem;
+  margin-bottom: 1em;
+  text-align: center;
   transition: border-color 0.2s ease, box-shadow 0.2s ease;
 }
 
@@ -743,6 +1119,16 @@ button.tertiary {
 
 button.tertiary:hover:enabled {
   background: rgba(37, 99, 235, 0.08);
+}
+
+button.danger {
+  background: #ef4444;
+  color: #ffffff;
+}
+
+button.danger:hover:enabled {
+  background: #dc2626;
+  transform: translateY(-1px);
 }
 
 code {
@@ -892,12 +1278,26 @@ code {
   flex-wrap: wrap;
   align-items: center;
   gap: 0.75rem;
+  flex: 1;
+}
+
+.item-content {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  flex: 1;
 }
 
 .item-name {
   font-size: 1.05rem;
   font-weight: 600;
   color: #1f2933;
+}
+
+.item-suggestion {
+  font-size: 0.9rem;
+  color: #64748b;
+  font-style: italic;
 }
 
 .item-karma {
@@ -959,6 +1359,7 @@ code {
   align-items: center;
   gap: 0.35rem;
   font-size: 0.8rem;
+  font-family: sans-serif;
   color: #475569;
   opacity: 0.85;
   pointer-events: auto;
@@ -1059,7 +1460,7 @@ code {
 }
 
 .edit-modal {
-  background: #ffffff;
+  background: #dee3e7;
   border-radius: 1rem;
   padding: 1.5rem;
   max-width: 400px;
@@ -1070,5 +1471,18 @@ code {
 .edit-modal h3 {
   margin-top: 0;
   margin-bottom: 1rem;
+}
+
+.delete-confirmation-text {
+  margin: 1rem 0;
+  color: #1f2933;
+  font-size: 1rem;
+}
+
+.delete-warning {
+  margin: 0.5rem 0 1.5rem 0;
+  color: #ef4444;
+  font-size: 0.9rem;
+  font-weight: 600;
 }
 </style>
