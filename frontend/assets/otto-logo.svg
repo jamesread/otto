@@ -1,0 +1,53 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="240" height="240" viewBox="0 0 240 240" role="img" aria-labelledby="title desc">
+  <style>
+    @keyframes otto-hover {
+      0%, 100% {
+        transform: translate(40px, 24px);
+      }
+
+      50% {
+        transform: translate(40px, 8px);
+      }
+    }
+
+    .otto-hover {
+      transform: translate(40px, 24px);
+      transform-box: fill-box;
+      transform-origin: center;
+      animation: otto-hover 2s ease-in-out infinite;
+    }
+  </style>
+  <title id="title">Otto personal assistant logo</title>
+  <desc id="desc">A bold circular badge with a friendly, centered robot face and a soft steel-blue palette.</desc>
+  <defs>
+    <linearGradient id="otto-gradient" x1="18%" y1="14%" x2="82%" y2="86%">
+      <stop offset="0%" stop-color="#F4F6F8"/>
+      <stop offset="48%" stop-color="#DEE3E7"/>
+      <stop offset="100%" stop-color="#B3BDC6"/>
+    </linearGradient>
+    <filter id="bubble-shadow" x="-15%" y="-25%" width="130%" height="160%" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="8" stdDeviation="12" flood-color="#0F1C3F" flood-opacity="0.35" />
+    </filter>
+  </defs>
+
+  <g class="otto-hover" filter="url(#bubble-shadow)">
+    <circle cx="80" cy="80" r="77" fill="none" stroke="#9CA6AE" stroke-width="6"/>
+    <circle cx="80" cy="80" r="74" fill="url(#otto-gradient)"/>
+    <g transform="translate(42 46)">
+      <g opacity="0.95">
+        <circle cx="22" cy="24" r="16" fill="#FFFFFF"/>
+        <circle cx="58" cy="24" r="16" fill="#FFFFFF"/>
+      </g>
+      <g opacity="0.92">
+        <circle cx="22" cy="24" r="9" fill="#4C5D86"/>
+        <circle cx="58" cy="24" r="9" fill="#4C5D86"/>
+      </g>
+      <g opacity="0.85">
+        <circle cx="18" cy="20" r="3.5" fill="#FFFFFF"/>
+        <circle cx="54" cy="20" r="3.5" fill="#FFFFFF"/>
+      </g>
+      <path d="M10 58c12 14 48 14 60 0" fill="none" stroke="#FFFFFF" stroke-width="8" stroke-linecap="round" opacity="0.82"/>
+    </g>
+  </g>
+</svg>
+

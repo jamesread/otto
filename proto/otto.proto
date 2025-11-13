@@ -1,0 +1,13 @@
+syntax = "proto3";
+
+package otto.v1;
+
+option go_package = "github.com/xconspirisist/otto/proto/otto/v1";
+
+message HealthCheckRequest {}
+
+message HealthCheckResponse {
+  string status = 1;
+}
+
+
