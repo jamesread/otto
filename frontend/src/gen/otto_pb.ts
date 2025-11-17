@@ -2,15 +2,15 @@
 // @generated from file otto.proto (package otto.v1, syntax proto3)
 /* eslint-disable */
 
-import type { GenFile, GenMessage } from "@bufbuild/protobuf/codegenv2";
-import { fileDesc, messageDesc } from "@bufbuild/protobuf/codegenv2";
+import type { GenFile, GenMessage, GenService } from "@bufbuild/protobuf/codegenv2";
+import { fileDesc, messageDesc, serviceDesc } from "@bufbuild/protobuf/codegenv2";
 import type { Message } from "@bufbuild/protobuf";
 
 /**
  * Describes the file otto.proto.
  */
 export const file_otto: GenFile = /*@__PURE__*/
-  fileDesc("CgpvdHRvLnByb3RvEgdvdHRvLnYxIhQKEkhlYWx0aENoZWNrUmVxdWVzdCIlChNIZWFsdGhDaGVja1Jlc3BvbnNlEg4KBnN0YXR1cxgBIAEoCUItWitnaXRodWIuY29tL3hjb25zcGlyaXNpc3Qvb3R0by9wcm90by9vdHRvL3YxYgZwcm90bzM");
+  fileDesc("CgpvdHRvLnByb3RvEgdvdHRvLnYxIhQKEkhlYWx0aENoZWNrUmVxdWVzdCIlChNIZWFsdGhDaGVja1Jlc3BvbnNlEg4KBnN0YXR1cxgBIAEoCTJTCg1IZWFsdGhTZXJ2aWNlEkIKBUNoZWNrEhsub3R0by52MS5IZWFsdGhDaGVja1JlcXVlc3QaHC5vdHRvLnYxLkhlYWx0aENoZWNrUmVzcG9uc2VCLVorZ2l0aHViLmNvbS94Y29uc3BpcmlzaXN0L290dG8vcHJvdG8vb3R0by92MWIGcHJvdG8z");
 
 /**
  * @generated from message otto.v1.HealthCheckRequest
@@ -41,4 +41,19 @@ export type HealthCheckResponse = Message<"otto.v1.HealthCheckResponse"> & {
  */
 export const HealthCheckResponseSchema: GenMessage<HealthCheckResponse> = /*@__PURE__*/
   messageDesc(file_otto, 1);
+
+/**
+ * @generated from service otto.v1.HealthService
+ */
+export const HealthService: GenService<{
+  /**
+   * @generated from rpc otto.v1.HealthService.Check
+   */
+  check: {
+    methodKind: "unary";
+    input: typeof HealthCheckRequestSchema;
+    output: typeof HealthCheckResponseSchema;
+  },
+}> = /*@__PURE__*/
+  serviceDesc(file_otto, 0);
 
