@@ -208,8 +208,16 @@ const isItemRecentlyUpdated = (item: Item): boolean => {
   }
 };
 
-const filteredStatusItems = computed(() => {
+const pendingStatusItems = computed(() => {
   return statusItems.value.filter((item) => !isItemRecentlyUpdated(item));
+});
+
+const filteredStatusItems = computed(() => {
+  return pendingStatusItems.value.slice(0, 3);
+});
+
+const hiddenStatusItemCount = computed(() => {
+  return Math.max(pendingStatusItems.value.length - filteredStatusItems.value.length, 0);
 });
 
 const attemptInitialInit = async (): Promise<boolean> => {
@@ -782,38 +790,44 @@ onUnmounted(() => {
     <section class="card results-card">
       <p v-if="isLoading" class="info">Loading…</p>
       <p v-else-if="errorMessage" class="error">Request failed: {{ errorMessage }}</p>
-      <ol v-else-if="filteredStatusItems.length" class="items-list">
-        <li
-          v-for="(item, index) in filteredStatusItems"
-          :key="item.id || index"
-          :class="['items-list-entry', getKarmaClass(item)]"
-          @click="handleItemClick(item)"
-          @contextmenu="handleItemRightClick($event, item)"
-        >
-          <span class="item-marker" aria-hidden="true" />
-          <div class="item-body">
-            <div class="item-content">
-              <span class="item-name">{{ getItemName(item) }}</span>
+      <template v-else-if="filteredStatusItems.length">
+        <ol class="items-list">
+          <li
+            v-for="(item, index) in filteredStatusItems"
+            :key="item.id || index"
+            :class="['items-list-entry', getKarmaClass(item)]"
+            @click="handleItemClick(item)"
+            @contextmenu="handleItemRightClick($event, item)"
+          >
+            <div class="item-body">
+              <div class="item-content">
+                <span class="item-name">{{ getItemName(item) }}</span>
+                <span
+                  v-if="getItemSuggestion(item) !== null"
+                  class="item-suggestion"
+                >
+                  {{ getItemSuggestion(item) }}
+                </span>
+              </div>
               <span
-                v-if="getItemSuggestion(item) !== null"
-                class="item-suggestion"
+                v-if="getKarmaLabel(item) !== null"
+                class="item-karma"
+                :class="getKarmaClass(item)"
               >
-                {{ getItemSuggestion(item) }}
+                {{ getKarmaLabel(item) }}
               </span>
             </div>
-            <span
-              v-if="getKarmaLabel(item) !== null"
-              class="item-karma"
-              :class="getKarmaClass(item)"
-            >
-              {{ getKarmaLabel(item) }}
-            </span>
-          </div>
-        </li>
-      </ol>
+          </li>
+        </ol>
+      </template>
       <p v-else-if="statusItems.length === 0" class="info">No items returned.</p>
       <p v-else class="info">All items have been recently updated.</p>
     </section>
+    <div>
+        <p v-if="hiddenStatusItemCount > 0" class="info remaining-items">
+          {{ hiddenStatusItemCount }} more thing{{ hiddenStatusItemCount === 1 ? '' : 's' }} to do after this
+        </p>
+    </div>
     <div
       v-if="editingItem"
       class="edit-modal-overlay"
@@ -1169,6 +1183,14 @@ code {
   color: #475569;
 }
 
+.remaining-items {
+  margin-top: 0.85rem;
+  text-align: center;
+  font-size: 0.85rem;
+  color: #94a3b8;
+  letter-spacing: 0.01em;
+}
+
 .error {
   color: #e11d48;
 }
@@ -1214,63 +1236,6 @@ code {
   border-color: rgba(239, 68, 68, 0.35);
   background: linear-gradient(135deg, rgba(254, 226, 226, 0.95), rgba(254, 205, 211, 0.65));
   box-shadow: inset 0 0 0 1px rgba(239, 68, 68, 0.12);
-}
-
-.item-marker {
-  flex-shrink: 0;
-  width: 1.25rem;
-  height: 1.25rem;
-  border-radius: 50%;
-  border: 2px solid rgba(37, 99, 235, 0.5);
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  position: relative;
-  background: rgba(37, 99, 235, 0.05);
-}
-
-.item-marker::after {
-  content: '';
-  width: 0.55rem;
-  height: 0.55rem;
-  border-radius: 50%;
-  background: rgba(37, 99, 235, 0.65);
-  transition: transform 0.2s ease, opacity 0.2s ease;
-  transform: scale(0.6);
-  opacity: 0.85;
-}
-
-.items-list-entry.karma-positive .item-marker {
-  border-color: rgba(34, 197, 94, 0.6);
-  background: rgba(34, 197, 94, 0.12);
-}
-
-.items-list-entry.karma-positive .item-marker::after {
-  background: #16a34a;
-  opacity: 1;
-  transform: scale(0.75);
-}
-
-.items-list-entry.karma-warning .item-marker {
-  border-color: rgba(234, 179, 8, 0.6);
-  background: rgba(234, 179, 8, 0.12);
-}
-
-.items-list-entry.karma-warning .item-marker::after {
-  background: #d97706;
-  opacity: 1;
-  transform: scale(0.75);
-}
-
-.items-list-entry.karma-negative .item-marker {
-  border-color: rgba(239, 68, 68, 0.6);
-  background: rgba(239, 68, 68, 0.12);
-}
-
-.items-list-entry.karma-negative .item-marker::after {
-  background: #ef4444;
-  opacity: 1;
-  transform: scale(0.75);
 }
 
 .item-body {
