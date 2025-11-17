@@ -1,0 +1,17 @@
+{
+  "name": "otto",
+  "version": "0.0.0-development",
+  "description": "A little personal assistant for people who find it hard to manage task lists.",
+  "private": true,
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/jamesread/otto.git"
+  },
+  "scripts": {
+    "semantic-release": "semantic-release"
+  },
+  "devDependencies": {
+    "semantic-release": "^23.0.0"
+  }
+}
+
