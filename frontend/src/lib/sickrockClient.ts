@@ -7,13 +7,20 @@ type Credentials = {
   password?: string;
 };
 
+const bytesToBase64 = (bytes: Uint8Array): string => {
+  const bin = Array.from(bytes, (byte) => String.fromCodePoint(byte)).join('');
+  return btoa(bin);
+};
+
 const buildAuthHeader = (credentials?: Credentials) => {
   if (!credentials?.username || !credentials.password) {
     return undefined;
   }
 
-  const token = btoa(`${credentials.username}:${credentials.password}`);
-  return `Basic ${token}`;
+  const bytes = new TextEncoder().encode(
+    `${credentials.username}:${credentials.password}`,
+  );
+  return `Basic ${bytesToBase64(bytes)}`;
 };
 
 export const createSickRockClient = (

@@ -49,7 +49,7 @@
       </g>
       <g fill="none" stroke="#7F8BB2" stroke-width="3.5" stroke-linecap="round" opacity="0.55">
         <path d="M4 16c3-6 8-11 14-13"/>
-        <path d="M76 16c-3-6-8-11-14-13"/>
+        <path d="76 16c-3-6-8-11-14-13"/>
       </g>
       <g opacity="0.9">
         <ellipse cx="21" cy="22" rx="5" ry="6" fill="#FFFFFF"/>
@@ -62,4 +62,3 @@
     </g>
   </g>
 </svg>
-

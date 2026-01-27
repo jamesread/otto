@@ -104,6 +104,13 @@ const effectiveBaseUrl = computed(() => baseUrl.value.trim());
 const needsAuth = computed(() => effectiveBaseUrl.value.length > 0);
 const hasToken = computed(() => Boolean(token.value));
 
+const baseUrlMissingApiSuffix = computed(() => {
+  const url = effectiveBaseUrl.value;
+  if (!url) return false;
+  const normalized = url.replace(/\/+$/, '');
+  return !normalized.endsWith('/api');
+});
+
 const clearStoredToken = () => {
   token.value = null;
   showConnectionUI.value = true;
@@ -114,7 +121,7 @@ type KarmaTier = 'positive' | 'warning' | 'negative' | 'neutral';
 
 const parseKarmaValue = (item: Item): KarmaCategory | null => {
   const raw = item.additionalFields?.karma;
-  if (raw === undefined) {
+  if (raw === undefined || typeof raw !== 'string') {
     return null;
   }
 
@@ -928,7 +935,6 @@ onUnmounted(() => {
         @submit.prevent="handleSubmit"
       >
         <div class="field">
-          <label class="field-label" for="base-url">Service base URL</label>
           <input
             id="base-url"
             v-model="baseUrl"
@@ -939,26 +945,29 @@ onUnmounted(() => {
             :disabled="isLoading"
           />
         </div>
+        <p v-if="baseUrlMissingApiSuffix" class="warning">
+          The server URL should end with <code>/api</code> (e.g. <code>https://example.com/api</code>).
+        </p>
         <div v-if="needsAuth" class="auth-fields">
           <div class="field">
-            <label class="field-label" for="username">Username</label>
             <input
               id="username"
               v-model="username"
               class="base-url-input"
               type="text"
               autocomplete="username"
+              placeholder="Username"
               :disabled="isLoading"
             />
           </div>
           <div class="field">
-            <label class="field-label" for="password">Password</label>
             <input
               id="password"
               v-model="password"
               class="base-url-input"
               type="password"
               autocomplete="current-password"
+              placeholder="Password"
               :disabled="isLoading"
             />
           </div>
@@ -1003,6 +1012,9 @@ onUnmounted(() => {
     </section>
   </main>
   <footer class="app-footer">
+    <p v-if="!showConnectionUI && baseUrlMissingApiSuffix" class="warning footer-warning">
+      Server URL should end with <code>/api</code>.
+    </p>
     <span class="refresh-indicator" :class="{ refreshing: isLoading }">
       <span class="refresh-indicator-dot" />
       <span>{{ refreshCountdownLabel }}</span>
@@ -1061,12 +1073,6 @@ onUnmounted(() => {
   text-align: left;
 }
 
-.field-label {
-  font-size: 0.95rem;
-  font-weight: 600;
-  color: #1f2933;
-}
-
 .base-url-input {
   padding: 0.6rem 0.75rem;
   border: 1px solid rgba(15, 23, 42, 0.15);
@@ -1086,6 +1092,12 @@ onUnmounted(() => {
 .hint {
   color: #64748b;
   font-size: 0.9rem;
+}
+
+.warning {
+  color: #b45309;
+  font-size: 0.9rem;
+  font-weight: 500;
 }
 
 .actions {
@@ -1317,6 +1329,12 @@ code {
   background: rgba(15, 23, 42, 0.05);
   border-color: rgba(15, 23, 42, 0.05);
   box-shadow: none;
+}
+
+.footer-warning {
+  margin: 0;
+  font-size: 0.8rem;
+  pointer-events: auto;
 }
 
 .refresh-indicator {
