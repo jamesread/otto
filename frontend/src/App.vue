@@ -40,10 +40,13 @@ const itemNameInput = ref('');
 const itemNameInputRef = ref<HTMLInputElement | null>(null);
 const feelingInput = ref('');
 const feelingInputRef = ref<HTMLInputElement | null>(null);
+const tagsInput = ref('');
 const showCreateDialog = ref(false);
 const newItemName = ref('');
 const newItemFeeling = ref('');
+const newItemTags = ref('');
 const newItemNameInputRef = ref<HTMLInputElement | null>(null);
+const filterQuery = ref('');
 const itemToDelete = ref<Item | null>(null);
 const showDeleteConfirmation = ref(false);
 const REFRESH_INTERVAL_SECONDS = 30;
@@ -162,6 +165,96 @@ const getKarmaLabel = (item: Item): string | null => {
   return category.charAt(0).toUpperCase() + category.slice(1);
 };
 
+type ParsedTag = { key: string; value: string };
+
+const parseTagsString = (raw: string | undefined): ParsedTag[] => {
+  if (!raw || typeof raw !== 'string' || !raw.trim()) {
+    return [];
+  }
+  const lines = raw.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+  const result: ParsedTag[] = [];
+  for (const line of lines) {
+    const colonIndex = line.indexOf(':');
+    if (colonIndex >= 0) {
+      result.push({
+        key: line.slice(0, colonIndex).trim(),
+        value: line.slice(colonIndex + 1).trim(),
+      });
+    } else if (line) {
+      result.push({ key: line, value: '' });
+    }
+  }
+  return result;
+};
+
+const getParsedTags = (item: Item): ParsedTag[] =>
+  parseTagsString(item.additionalFields?.tags);
+
+const parseFilterExpression = (raw: string): { negations: string[]; positives: string[] } => {
+  const trimmed = raw.trim();
+  if (!trimmed) {
+    return { negations: [], positives: [] };
+  }
+  const terms = trimmed.split(/\s+/).filter(Boolean);
+  const negations: string[] = [];
+  const positives: string[] = [];
+  for (const t of terms) {
+    if (t.startsWith('!')) {
+      const rest = t.slice(1).trim();
+      if (rest) negations.push(rest);
+    } else {
+      positives.push(t);
+    }
+  }
+  return { negations, positives };
+};
+
+const itemTagContainsTerm = (item: Item, term: string): boolean => {
+  const lower = term.toLowerCase();
+  const tags = getParsedTags(item);
+  for (const tag of tags) {
+    if (tag.key.toLowerCase().includes(lower) || tag.value.toLowerCase().includes(lower)) {
+      return true;
+    }
+  }
+  return false;
+};
+
+const filteredBySearch = computed(() => {
+  const { negations, positives } = parseFilterExpression(filterQuery.value);
+  let list = pendingStatusItems.value;
+  for (const term of negations) {
+    list = list.filter((item) => !itemTagContainsTerm(item, term));
+  }
+  if (positives.length > 0) {
+    list = list.filter((item) => positives.some((term) => itemTagContainsTerm(item, term)));
+  }
+  return list;
+});
+
+const hashString = (s: string): number => {
+  let h = 0;
+  for (let i = 0; i < s.length; i++) {
+    h = (h * 31 + s.charCodeAt(i)) >>> 0;
+  }
+  return h;
+};
+
+const getTagStyle = (key: string): { background: string; color: string; border: string; '--tag-separator-color': string } => {
+  const hue = hashString(key) % 360;
+  const sat = 72;
+  const lightBg = 92;
+  const lightFg = 28;
+  const lightSeparator = Math.min(100, lightFg + (100 - lightFg) * 0.5);
+  const color = `hsl(${hue}, ${sat}%, ${lightFg}%)`;
+  return {
+    background: `hsl(${hue}, ${sat}%, ${lightBg}%)`,
+    color,
+    border: `1px solid ${color}`,
+    '--tag-separator-color': `hsl(${hue}, ${sat}%, ${lightSeparator}%)`,
+  };
+};
+
 const NAME_FIELD_CANDIDATES = ['name', 'Name', 'title', 'Title'] as const;
 
 const getItemName = (item: Item): string => {
@@ -220,11 +313,11 @@ const pendingStatusItems = computed(() => {
 });
 
 const filteredStatusItems = computed(() => {
-  return pendingStatusItems.value.slice(0, 3);
+  return filteredBySearch.value.slice(0, 3);
 });
 
 const hiddenStatusItemCount = computed(() => {
-  return Math.max(pendingStatusItems.value.length - filteredStatusItems.value.length, 0);
+  return Math.max(filteredBySearch.value.length - filteredStatusItems.value.length, 0);
 });
 
 const attemptInitialInit = async (): Promise<boolean> => {
@@ -418,6 +511,7 @@ const handleItemClick = (item: Item) => {
   editingItem.value = item;
   itemNameInput.value = getItemName(item);
   feelingInput.value = item.additionalFields?.feeling || '';
+  tagsInput.value = item.additionalFields?.tags || '';
 };
 
 const handleItemRightClick = (event: MouseEvent, item: Item) => {
@@ -503,6 +597,7 @@ const cancelEdit = () => {
   editingItem.value = null;
   itemNameInput.value = '';
   feelingInput.value = '';
+  tagsInput.value = '';
 };
 
 const saveItem = async () => {
@@ -559,6 +654,7 @@ const saveItem = async () => {
     const additionalFields: { [key: string]: string } = {
       ...item.additionalFields,
       feeling: feelingInput.value,
+      tags: tagsInput.value,
       last_human_update: formattedTimestamp,
     };
 
@@ -585,6 +681,7 @@ const saveItem = async () => {
     editingItem.value = null;
     itemNameInput.value = '';
     feelingInput.value = '';
+    tagsInput.value = '';
   } catch (error) {
     if (error instanceof Error) {
       errorMessage.value = error.message;
@@ -612,12 +709,14 @@ const openCreateDialog = () => {
   showCreateDialog.value = true;
   newItemName.value = '';
   newItemFeeling.value = '';
+  newItemTags.value = '';
 };
 
 const cancelCreate = () => {
   showCreateDialog.value = false;
   newItemName.value = '';
   newItemFeeling.value = '';
+  newItemTags.value = '';
 };
 
 const createItem = async () => {
@@ -670,6 +769,10 @@ const createItem = async () => {
 
     if (newItemFeeling.value.trim()) {
       additionalFields.feeling = newItemFeeling.value.trim();
+    }
+
+    if (newItemTags.value.trim()) {
+      additionalFields.tags = newItemTags.value.trim();
     }
 
     const request = createCreateItemRequest({
@@ -797,8 +900,19 @@ onUnmounted(() => {
     <section class="card results-card">
       <p v-if="isLoading" class="info">Loading…</p>
       <p v-else-if="errorMessage" class="error">Request failed: {{ errorMessage }}</p>
-      <template v-else-if="filteredStatusItems.length">
-        <ol class="items-list">
+      <template v-else>
+        <div v-if="statusItems.length > 0" class="filter-field">
+          <input
+            id="filter-input"
+            v-model="filterQuery"
+            class="base-url-input filter-input"
+            type="text"
+            placeholder="Filter (!negation includes positive, e.g. !due redhat)"
+            :disabled="isLoading"
+          />
+        </div>
+        <template v-if="filteredStatusItems.length">
+          <ol class="items-list">
           <li
             v-for="(item, index) in filteredStatusItems"
             :key="item.id || index"
@@ -815,6 +929,16 @@ onUnmounted(() => {
                 >
                   {{ getItemSuggestion(item) }}
                 </span>
+                <div v-if="getParsedTags(item).length" class="item-tags">
+                  <span
+                    v-for="(tag, tagIdx) in getParsedTags(item)"
+                    :key="tagIdx"
+                    class="item-tag"
+                    :style="getTagStyle(tag.key)"
+                  >
+                    <span :class="['item-tag-key', { 'item-tag-key--has-value': tag.value }]">{{ tag.key }}</span><span v-if="tag.value" class="item-tag-value">{{ tag.value }}</span>
+                  </span>
+                </div>
               </div>
               <span
                 v-if="getKarmaLabel(item) !== null"
@@ -829,6 +953,7 @@ onUnmounted(() => {
       </template>
       <p v-else-if="statusItems.length === 0" class="info">No items returned.</p>
       <p v-else class="info">All items have been recently updated.</p>
+      </template>
     </section>
     <div>
         <p v-if="hiddenStatusItemCount > 0" class="info remaining-items">
@@ -868,6 +993,17 @@ onUnmounted(() => {
             @keyup.esc="cancelEdit"
           />
         </div>
+        <div class="field">
+          <textarea
+            id="tags-input"
+            v-model="tagsInput"
+            class="base-url-input tags-textarea"
+            placeholder="Tags (one per line, key:value)"
+            rows="3"
+            :disabled="isLoading"
+            @keyup.esc="cancelEdit"
+          />
+        </div>
       </div>
     </div>
     <div
@@ -899,6 +1035,17 @@ onUnmounted(() => {
             placeholder="Feeling (optional)"
             :disabled="isLoading"
             @keyup.enter="createItem"
+            @keyup.esc="cancelCreate"
+          />
+        </div>
+        <div class="field">
+          <textarea
+            id="new-item-tags-input"
+            v-model="newItemTags"
+            class="base-url-input tags-textarea"
+            placeholder="Tags (one per line, key:value)"
+            rows="3"
+            :disabled="isLoading"
             @keyup.esc="cancelCreate"
           />
         </div>
@@ -1089,6 +1236,11 @@ onUnmounted(() => {
   box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.15);
 }
 
+.tags-textarea {
+  resize: vertical;
+  min-height: 4rem;
+}
+
 .hint {
   color: #64748b;
   font-size: 0.9rem;
@@ -1186,6 +1338,19 @@ code {
   gap: 1rem;
 }
 
+.filter-field {
+  margin-bottom: 0.25rem;
+  width: 100%;
+}
+
+.filter-input {
+  margin-bottom: 0;
+  width: 100%;
+  box-sizing: border-box;
+  text-align: center;
+  font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
+}
+
 .subtitle {
   color: #475569;
   margin-bottom: 1rem;
@@ -1275,6 +1440,30 @@ code {
   font-size: 0.9rem;
   color: #64748b;
   font-style: italic;
+}
+
+.item-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-top: 0.35rem;
+}
+
+.item-tag {
+  display: inline-flex;
+  align-items: center;
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font-size: 0.75rem;
+  font-weight: 600;
+  padding: 0.3rem 0.75rem;
+  border-radius: 0.4rem;
+  letter-spacing: 0.02em;
+}
+
+.item-tag-key--has-value {
+  border-right: 1px solid var(--tag-separator-color);
+  padding-right: 0.35rem;
+  margin-right: 0.35rem;
 }
 
 .item-karma {
