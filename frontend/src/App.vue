@@ -16,11 +16,16 @@ import {
   type DeleteItemRequest,
 } from './gen/sickrock_pb';
 import { createSickRockClient } from './lib/sickrockClient';
+import { BUILD_VERSION, BUILD_COMMIT, BUILD_DATE } from './buildinfo.js';
 
 const STORAGE_KEYS = {
   baseUrl: 'otto-base-url',
   token: 'otto-token',
+  pendingItems: 'otto-pending-items',
 } as const;
+
+/** Offline-created item stored in localStorage until synced to server. Item-compatible for display. */
+type PendingLocalItem = { id: string; additionalFields?: { [key: string]: string } };
 
 const LEGACY_KEYS = {
   baseUrl: 'sickrock.baseUrl',
@@ -49,6 +54,10 @@ const newItemNameInputRef = ref<HTMLInputElement | null>(null);
 const filterQuery = ref('');
 const itemToDelete = ref<Item | null>(null);
 const showDeleteConfirmation = ref(false);
+const showOptionsMenu = ref(false);
+const showBuildInfoModal = ref(false);
+const pendingLocalItems = ref<PendingLocalItem[]>([]);
+const isOnline = ref(typeof navigator !== 'undefined' ? navigator.onLine : true);
 const REFRESH_INTERVAL_SECONDS = 30;
 const refreshCountdown = ref(REFRESH_INTERVAL_SECONDS);
 let refreshTimer: ReturnType<typeof setInterval> | null = null;
@@ -102,6 +111,30 @@ watch(token, (value) => {
   }
   window.localStorage.removeItem(LEGACY_KEYS.token);
 });
+
+function loadPendingFromStorage(): void {
+  if (typeof window === 'undefined') return;
+  try {
+    const raw = window.localStorage.getItem(STORAGE_KEYS.pendingItems);
+    if (raw) {
+      const parsed = JSON.parse(raw) as PendingLocalItem[];
+      if (Array.isArray(parsed)) {
+        pendingLocalItems.value = parsed.filter(
+          (p) => p && typeof p.id === 'string' && (p.additionalFields == null || typeof p.additionalFields === 'object'),
+        );
+        return;
+      }
+    }
+  } catch {
+    /* ignore */
+  }
+  pendingLocalItems.value = [];
+}
+
+function savePendingToStorage(): void {
+  if (typeof window === 'undefined') return;
+  window.localStorage.setItem(STORAGE_KEYS.pendingItems, JSON.stringify(pendingLocalItems.value));
+}
 
 const effectiveBaseUrl = computed(() => baseUrl.value.trim());
 const needsAuth = computed(() => effectiveBaseUrl.value.length > 0);
@@ -220,14 +253,21 @@ const itemTagContainsTerm = (item: Item, term: string): boolean => {
   return false;
 };
 
-const filteredBySearch = computed(() => {
+type DisplayEntry = { item: Item | PendingLocalItem; isLocalOnly: boolean };
+
+const allItemsForFilter = computed((): DisplayEntry[] => [
+  ...pendingLocalItems.value.map((item) => ({ item, isLocalOnly: true })),
+  ...pendingStatusItems.value.map((item) => ({ item, isLocalOnly: false })),
+]);
+
+const filteredBySearch = computed((): DisplayEntry[] => {
   const { negations, positives } = parseFilterExpression(filterQuery.value);
-  let list = pendingStatusItems.value;
+  let list = allItemsForFilter.value;
   for (const term of negations) {
-    list = list.filter((item) => !itemTagContainsTerm(item, term));
+    list = list.filter(({ item }) => !itemTagContainsTerm(item, term));
   }
   if (positives.length > 0) {
-    list = list.filter((item) => positives.some((term) => itemTagContainsTerm(item, term)));
+    list = list.filter(({ item }) => positives.some((term) => itemTagContainsTerm(item, term)));
   }
   return list;
 });
@@ -319,6 +359,10 @@ const filteredStatusItems = computed(() => {
 const hiddenStatusItemCount = computed(() => {
   return Math.max(filteredBySearch.value.length - filteredStatusItems.value.length, 0);
 });
+
+function isPendingLocalItem(item: Item | PendingLocalItem): boolean {
+  return pendingLocalItems.value.some((p) => p.id === item.id);
+}
 
 const attemptInitialInit = async (): Promise<boolean> => {
   if (!token.value) {
@@ -495,6 +539,55 @@ const handleSubmit = async () => {
   await refreshStatusItems();
 };
 
+async function syncPendingItemsToServer(): Promise<void> {
+  if (!isOnline.value || pendingLocalItems.value.length === 0) {
+    return;
+  }
+  const sanitizedUsername = username.value.trim();
+  const credentials = needsAuth.value
+    ? { username: sanitizedUsername, password: password.value }
+    : undefined;
+  if (needsAuth.value && (!credentials?.username || !credentials?.password)) {
+    return;
+  }
+  let client = createSickRockClient(
+    needsAuth.value ? effectiveBaseUrl.value : undefined,
+    credentials,
+    token.value,
+  );
+  if (needsAuth.value && credentials && !token.value) {
+    try {
+      const loginResponse = await client.login({
+        username: credentials.username,
+        password: credentials.password,
+      });
+      if (!loginResponse.token) return;
+      token.value = loginResponse.token;
+      client = createSickRockClient(effectiveBaseUrl.value, credentials, token.value);
+    } catch {
+      return;
+    }
+  }
+  const toRemove: string[] = [];
+  for (const pending of pendingLocalItems.value) {
+    try {
+      const request = createCreateItemRequest({
+        pageId: 'status',
+        additionalFields: pending.additionalFields ?? {},
+      });
+      await client.createItem(request);
+      toRemove.push(pending.id);
+    } catch {
+      /* leave in pending for next sync */
+    }
+  }
+  if (toRemove.length > 0) {
+    pendingLocalItems.value = pendingLocalItems.value.filter((p) => !toRemove.includes(p.id));
+    savePendingToStorage();
+    await refreshStatusItems();
+  }
+}
+
 const createEditItemRequest = (
   init: MessageInitShape<typeof EditItemRequestSchema> = {},
 ) => create(EditItemRequestSchema, init);
@@ -529,6 +622,13 @@ const confirmDelete = async () => {
   if (!itemToDelete.value) return;
 
   const item = itemToDelete.value;
+  if (isPendingLocalItem(item)) {
+    pendingLocalItems.value = pendingLocalItems.value.filter((p) => p.id !== item.id);
+    savePendingToStorage();
+    cancelDelete();
+    return;
+  }
+
   isLoading.value = true;
   errorMessage.value = null;
 
@@ -604,6 +704,23 @@ const saveItem = async () => {
   if (!editingItem.value) return;
 
   const item = editingItem.value;
+  if (isPendingLocalItem(item)) {
+    const idx = pendingLocalItems.value.findIndex((p) => p.id === item.id);
+    if (idx !== -1) {
+      const nameValue = itemNameInput.value.trim();
+      const additionalFields: { [key: string]: string } = {
+        ...pendingLocalItems.value[idx].additionalFields,
+        feeling: feelingInput.value,
+        tags: tagsInput.value,
+      };
+      if (nameValue) additionalFields.name = nameValue;
+      pendingLocalItems.value[idx] = { ...pendingLocalItems.value[idx], additionalFields };
+      savePendingToStorage();
+    }
+    cancelEdit();
+    return;
+  }
+
   isLoading.value = true;
   errorMessage.value = null;
 
@@ -701,8 +818,21 @@ const handleEscapeKey = (event: KeyboardEvent) => {
       cancelCreate();
     } else if (showDeleteConfirmation.value) {
       cancelDelete();
+    } else if (showBuildInfoModal.value) {
+      showBuildInfoModal.value = false;
+    } else if (showOptionsMenu.value) {
+      showOptionsMenu.value = false;
     }
   }
+};
+
+const openBuildInfo = () => {
+  showOptionsMenu.value = false;
+  showBuildInfoModal.value = true;
+};
+
+const closeBuildInfo = () => {
+  showBuildInfoModal.value = false;
 };
 
 const openCreateDialog = () => {
@@ -722,6 +852,26 @@ const cancelCreate = () => {
 const createItem = async () => {
   if (!newItemName.value.trim()) {
     errorMessage.value = 'Item name is required.';
+    return;
+  }
+
+  if (!isOnline.value) {
+    const additionalFields: { [key: string]: string } = {
+      name: newItemName.value.trim(),
+    };
+    if (newItemFeeling.value.trim()) {
+      additionalFields.feeling = newItemFeeling.value.trim();
+    }
+    if (newItemTags.value.trim()) {
+      additionalFields.tags = newItemTags.value.trim();
+    }
+    const pending: PendingLocalItem = {
+      id: typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `local-${Date.now()}`,
+      additionalFields,
+    };
+    pendingLocalItems.value.push(pending);
+    savePendingToStorage();
+    cancelCreate();
     return;
   }
 
@@ -823,13 +973,48 @@ watch(showDeleteConfirmation, (isShowing) => {
   }
 });
 
+watch(showBuildInfoModal, (isShowing) => {
+  if (isShowing) {
+    window.addEventListener('keydown', handleEscapeKey);
+  } else {
+    window.removeEventListener('keydown', handleEscapeKey);
+  }
+});
+
+watch(showOptionsMenu, (isShowing) => {
+  if (isShowing) {
+    window.addEventListener('keydown', handleEscapeKey);
+  } else {
+    window.removeEventListener('keydown', handleEscapeKey);
+  }
+});
+
 onMounted(async () => {
+  loadPendingFromStorage();
+  if (typeof window !== 'undefined') {
+    const onOnline = () => {
+      isOnline.value = true;
+      void syncPendingItemsToServer();
+    };
+    const onOffline = () => {
+      isOnline.value = false;
+    };
+    window.addEventListener('online', onOnline);
+    window.addEventListener('offline', onOffline);
+    onUnmounted(() => {
+      window.removeEventListener('online', onOnline);
+      window.removeEventListener('offline', onOffline);
+    });
+  }
   let refreshedViaInit = false;
-  if (token.value) {
+  if (isOnline.value && token.value) {
     refreshedViaInit = await attemptInitialInit();
   }
-  if (!refreshedViaInit) {
+  if (isOnline.value && !refreshedViaInit) {
     await refreshStatusItems();
+  }
+  if (isOnline.value) {
+    await syncPendingItemsToServer();
   }
 });
 
@@ -901,7 +1086,7 @@ onUnmounted(() => {
       <p v-if="isLoading" class="info">Loading…</p>
       <p v-else-if="errorMessage" class="error">Request failed: {{ errorMessage }}</p>
       <template v-else>
-        <div v-if="statusItems.length > 0" class="filter-field">
+        <div v-if="statusItems.length > 0 || pendingLocalItems.length > 0" class="filter-field">
           <input
             id="filter-input"
             v-model="filterQuery"
@@ -914,24 +1099,24 @@ onUnmounted(() => {
         <template v-if="filteredStatusItems.length">
           <ol class="items-list">
           <li
-            v-for="(item, index) in filteredStatusItems"
-            :key="item.id || index"
-            :class="['items-list-entry', getKarmaClass(item)]"
-            @click="handleItemClick(item)"
-            @contextmenu="handleItemRightClick($event, item)"
+            v-for="(entry, index) in filteredStatusItems"
+            :key="entry.item.id || index"
+            :class="['items-list-entry', getKarmaClass(entry.item), { 'item-local-only': entry.isLocalOnly }]"
+            @click="handleItemClick(entry.item)"
+            @contextmenu="handleItemRightClick($event, entry.item)"
           >
             <div class="item-body">
               <div class="item-content">
-                <span class="item-name">{{ getItemName(item) }}</span>
+                <span class="item-name">{{ getItemName(entry.item) }}</span>
                 <span
-                  v-if="getItemSuggestion(item) !== null"
+                  v-if="getItemSuggestion(entry.item) !== null"
                   class="item-suggestion"
                 >
-                  {{ getItemSuggestion(item) }}
+                  {{ getItemSuggestion(entry.item) }}
                 </span>
-                <div v-if="getParsedTags(item).length" class="item-tags">
+                <div v-if="getParsedTags(entry.item).length" class="item-tags">
                   <span
-                    v-for="(tag, tagIdx) in getParsedTags(item)"
+                    v-for="(tag, tagIdx) in getParsedTags(entry.item)"
                     :key="tagIdx"
                     class="item-tag"
                     :style="getTagStyle(tag.key)"
@@ -941,11 +1126,11 @@ onUnmounted(() => {
                 </div>
               </div>
               <span
-                v-if="getKarmaLabel(item) !== null"
+                v-if="getKarmaLabel(entry.item) !== null"
                 class="item-karma"
-                :class="getKarmaClass(item)"
+                :class="getKarmaClass(entry.item)"
               >
-                {{ getKarmaLabel(item) }}
+                {{ getKarmaLabel(entry.item) }}
               </span>
             </div>
           </li>
@@ -1004,6 +1189,14 @@ onUnmounted(() => {
             @keyup.esc="cancelEdit"
           />
         </div>
+        <div class="actions">
+          <button type="button" :disabled="isLoading" @click="saveItem">
+            {{ isLoading ? 'Saving…' : 'Save' }}
+          </button>
+          <button type="button" class="secondary" :disabled="isLoading" @click="cancelEdit">
+            Cancel
+          </button>
+        </div>
       </div>
     </div>
     <div
@@ -1048,6 +1241,14 @@ onUnmounted(() => {
             :disabled="isLoading"
             @keyup.esc="cancelCreate"
           />
+        </div>
+        <div class="actions">
+          <button type="button" :disabled="isLoading" @click="createItem">
+            {{ isLoading ? 'Creating…' : 'Save' }}
+          </button>
+          <button type="button" class="secondary" :disabled="isLoading" @click="cancelCreate">
+            Cancel
+          </button>
         </div>
       </div>
     </div>
@@ -1166,16 +1367,56 @@ onUnmounted(() => {
       <span class="refresh-indicator-dot" />
       <span>{{ refreshCountdownLabel }}</span>
     </span>
-    <button
-      type="button"
-      class="footer-button"
-      :class="{ subtle: !showConnectionUI }"
-      :disabled="isLoading"
-      @click="showConnectionUI = !showConnectionUI"
-    >
-      {{ showConnectionUI ? 'Hide connection settings' : 'Configure connection' }}
-    </button>
+    <div class="footer-actions">
+      <button
+        type="button"
+        class="footer-button"
+        :class="{ subtle: !showConnectionUI }"
+        :disabled="isLoading"
+        @click="showConnectionUI = !showConnectionUI"
+      >
+        {{ showConnectionUI ? 'Hide connection settings' : 'Configure connection' }}
+      </button>
+      <div class="options-trigger-wrapper">
+        <button
+          type="button"
+          class="footer-button subtle"
+          aria-haspopup="true"
+          :aria-expanded="showOptionsMenu"
+          @click="showOptionsMenu = !showOptionsMenu"
+        >
+          Options
+        </button>
+        <div v-if="showOptionsMenu" class="options-menu" role="menu">
+          <button type="button" role="menuitem" class="options-menu-item" @click="openBuildInfo">
+            Build info
+          </button>
+        </div>
+      </div>
+    </div>
   </footer>
+  <div
+    v-if="showBuildInfoModal"
+    class="edit-modal-overlay"
+    @click.self="closeBuildInfo"
+  >
+    <div class="edit-modal">
+      <h3>Build info</h3>
+      <dl class="build-info-dl">
+        <dt>Version</dt>
+        <dd>{{ BUILD_VERSION }}</dd>
+        <dt>Commit</dt>
+        <dd>{{ BUILD_COMMIT }}</dd>
+        <dt>Build date</dt>
+        <dd>{{ BUILD_DATE }}</dd>
+      </dl>
+      <div class="actions">
+        <button type="button" class="secondary" @click="closeBuildInfo">
+          Close
+        </button>
+      </div>
+    </div>
+  </div>
 </template>
 
 <style scoped>
@@ -1184,7 +1425,6 @@ onUnmounted(() => {
   place-content: center;
   min-height: 100vh;
   gap: 2rem;
-  padding-bottom: 4rem;
   text-align: center;
   font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   color: #1f2933;
@@ -1399,6 +1639,26 @@ code {
   box-shadow: 0 6px 18px rgba(15, 23, 42, 0.08);
 }
 
+.items-list-entry.item-local-only {
+  border-style: dashed;
+  border-color: rgba(100, 116, 139, 0.4);
+  background: rgba(248, 250, 252, 0.85);
+  opacity: 0.95;
+  padding-top: 1.5rem;
+}
+
+.items-list-entry.item-local-only::before {
+  content: 'Saved locally';
+  position: absolute;
+  top: 0.35rem;
+  right: 0.6rem;
+  font-size: 0.65rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: #64748b;
+}
+
 .items-list-entry.karma-positive {
   border-color: rgba(34, 197, 94, 0.35);
   background: linear-gradient(135deg, rgba(240, 253, 244, 0.9), rgba(240, 253, 244, 0.65));
@@ -1494,16 +1754,54 @@ code {
 }
 
 .app-footer {
-  position: fixed;
-  bottom: 0;
-  left: 0;
-  right: 0;
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 0.75rem;
   padding: 1rem;
-  pointer-events: none;
+  margin-top: 2rem;
+}
+
+.footer-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 0.75rem;
+}
+
+.options-trigger-wrapper {
+  position: relative;
+}
+
+.options-menu {
+  position: absolute;
+  bottom: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  margin-bottom: 0.35rem;
+  min-width: 10rem;
+  background: #dee3e7;
+  border-radius: 0.5rem;
+  box-shadow: 0 4px 16px rgba(15, 23, 42, 0.15);
+  padding: 0.25rem;
+  z-index: 100;
+}
+
+.options-menu-item {
+  display: block;
+  width: 100%;
+  padding: 0.5rem 0.75rem;
+  text-align: left;
+  border: none;
+  border-radius: 0.35rem;
+  background: transparent;
+  color: #1f2933;
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+
+.options-menu-item:hover {
+  background: rgba(15, 23, 42, 0.08);
 }
 
 .footer-button {
@@ -1656,5 +1954,27 @@ code {
   color: #ef4444;
   font-size: 0.9rem;
   font-weight: 600;
+}
+
+.build-info-dl {
+  margin: 1rem 0 1.5rem 0;
+  text-align: left;
+  font-size: 0.9rem;
+}
+
+.build-info-dl dt {
+  margin-top: 0.5rem;
+  color: #64748b;
+  font-weight: 600;
+}
+
+.build-info-dl dt:first-child {
+  margin-top: 0;
+}
+
+.build-info-dl dd {
+  margin: 0.2rem 0 0 0;
+  color: #1f2933;
+  word-break: break-all;
 }
 </style>

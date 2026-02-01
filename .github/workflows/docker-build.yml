@@ -57,6 +57,20 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Generate build info
+        env:
+          GITHUB_SHA: ${{ github.sha }}
+        run: |
+          VERSION=$(node -p "require('./frontend/package.json').version")
+          COMMIT="${GITHUB_SHA}"
+          DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          cat > frontend/src/buildinfo.js << EOF
+          // Build-time info; CI overwrites these values (do not commit generated values).
+          export const BUILD_VERSION = '$VERSION';
+          export const BUILD_COMMIT = '$COMMIT';
+          export const BUILD_DATE = '$DATE';
+          EOF
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
