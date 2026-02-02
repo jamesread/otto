@@ -49,6 +49,8 @@ jobs:
 
   build-and-push:
     runs-on: ubuntu-latest
+    needs: release
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
     permissions:
       contents: read
       packages: write
@@ -56,12 +58,16 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
 
       - name: Generate build info
         env:
           GITHUB_SHA: ${{ github.sha }}
         run: |
-          VERSION=$(node -p "require('./frontend/package.json').version")
+          # Version comes from the git tag created by semantic-release (strip leading 'v')
+          VERSION=$(git describe --tags --exact-match 2>/dev/null | sed 's/^v//' || node -p "require('./package.json').version")
           COMMIT="${GITHUB_SHA}"
           DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
           cat > frontend/src/buildinfo.js << EOF

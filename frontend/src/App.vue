@@ -700,6 +700,51 @@ const cancelEdit = () => {
   tagsInput.value = '';
 };
 
+/** Build shareable task text (all fields) for sharing to a chat LLM. */
+const getShareableTaskText = (isCreate: boolean): string => {
+  const name = isCreate ? newItemName.value.trim() : itemNameInput.value.trim();
+  const feeling = isCreate ? newItemFeeling.value.trim() : feelingInput.value.trim();
+  const tags = isCreate ? newItemTags.value.trim() : tagsInput.value.trim();
+  const lines: string[] = [
+    "I use GTD (Getting Things Done). I'd like advice on this task:",
+    '',
+    `Item name: ${name || '(none)'}`,
+    `Feeling: ${feeling || '(none)'}`,
+    'Tags:',
+    tags || '(none)',
+  ];
+  return lines.join('\n');
+};
+
+const shareTaskForAdvice = async (isCreate: boolean) => {
+  const text = getShareableTaskText(isCreate);
+  if (typeof navigator !== 'undefined' && navigator.share) {
+    try {
+      await navigator.share({
+        title: 'Task for advice',
+        text,
+      });
+    } catch (err) {
+      if ((err as Error).name !== 'AbortError') {
+        try {
+          await navigator.clipboard.writeText(text);
+          errorMessage.value = 'Text copied to clipboard.';
+        } catch {
+          errorMessage.value = (err as Error).message;
+        }
+      }
+    }
+  } else {
+    try {
+      await navigator.clipboard.writeText(text);
+      errorMessage.value = null;
+      // Optional: could show a brief "Copied" toast
+    } catch {
+      errorMessage.value = 'Could not copy to clipboard.';
+    }
+  }
+};
+
 const saveItem = async () => {
   if (!editingItem.value) return;
 
@@ -1196,6 +1241,15 @@ onUnmounted(() => {
           <button type="button" class="secondary" :disabled="isLoading" @click="cancelEdit">
             Cancel
           </button>
+          <button
+            type="button"
+            class="secondary"
+            :disabled="isLoading"
+            @click="shareTaskForAdvice(false)"
+            title="Share task as text (e.g. to a chat LLM for advice)"
+          >
+            Share for advice
+          </button>
         </div>
       </div>
     </div>
@@ -1248,6 +1302,15 @@ onUnmounted(() => {
           </button>
           <button type="button" class="secondary" :disabled="isLoading" @click="cancelCreate">
             Cancel
+          </button>
+          <button
+            type="button"
+            class="secondary"
+            :disabled="isLoading"
+            @click="shareTaskForAdvice(true)"
+            title="Share task as text (e.g. to a chat LLM for advice)"
+          >
+            Share for advice
           </button>
         </div>
       </div>
