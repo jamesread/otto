@@ -1,7 +1,7 @@
 # otto
 
 <div align="center">
-  <img src="frontend/assets/otto-logo.svg" alt="Otto Logo" width="240" height="240">
+  <img src="logo.svg" alt="Otto Logo" width="240" height="240">
 </div>
 
 A little personal assistant for people who find it hard to manage task lists.
