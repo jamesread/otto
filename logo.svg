@@ -1,0 +1,65 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="240" height="240" viewBox="0 0 240 240" role="img" aria-labelledby="title desc">
+  <style>
+    @keyframes otto-hover {
+      0%, 100% {
+        transform: translate(40px, 40px);
+      }
+
+      50% {
+        transform: translate(40px, 24px);
+      }
+    }
+
+    .otto-hover {
+      transform: translate(40px, 40px);
+      transform-box: fill-box;
+      transform-origin: center;
+      animation: otto-hover 2s ease-in-out infinite;
+    }
+  </style>
+  <title id="title">Otto personal assistant logo</title>
+  <desc id="desc">A bold circular badge with a friendly, centered robot face and a soft steel-blue palette.</desc>
+  <defs>
+    <linearGradient id="otto-gradient" x1="18%" y1="14%" x2="82%" y2="86%">
+      <stop offset="0%" stop-color="#F4F6F8"/>
+      <stop offset="48%" stop-color="#DEE3E7"/>
+      <stop offset="100%" stop-color="#B3BDC6"/>
+    </linearGradient>
+    <filter id="bubble-shadow" x="-15%" y="-25%" width="130%" height="160%" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="8" stdDeviation="12" flood-color="#0F1C3F" flood-opacity="0.35" />
+    </filter>
+    <radialGradient id="otto-eye-iris" cx="50%" cy="40%" r="60%">
+      <stop offset="0%" stop-color="#8ED0FF"/>
+      <stop offset="55%" stop-color="#4C5D86"/>
+      <stop offset="100%" stop-color="#1F2540"/>
+    </radialGradient>
+  </defs>
+
+  <g class="otto-hover" filter="url(#bubble-shadow)">
+    <circle cx="80" cy="80" r="77" fill="none" stroke="#34465F" stroke-width="6"/>
+    <circle cx="80" cy="80" r="74" fill="url(#otto-gradient)"/>
+    <g transform="translate(42 46)">
+      <g opacity="0.97">
+        <ellipse cx="22" cy="26" rx="19" ry="20" fill="#FFFFFF"/>
+        <ellipse cx="58" cy="26" rx="19" ry="20" fill="#FFFFFF"/>
+      </g>
+      <g opacity="0.96">
+        <ellipse cx="24" cy="26" rx="12" ry="13" fill="url(#otto-eye-iris)"/>
+        <ellipse cx="56" cy="26" rx="12" ry="13" fill="url(#otto-eye-iris)"/>
+      </g>
+      <g fill="none" stroke="#7F8BB2" stroke-width="3.5" stroke-linecap="round" opacity="0.55">
+        <path d="M4 16c3-6 8-11 14-13"/>
+        <path d="M76 16c-3-6-8-11-14-13"/>
+      </g>
+      <g opacity="0.9">
+        <ellipse cx="21" cy="22" rx="5" ry="6" fill="#FFFFFF"/>
+        <ellipse cx="53" cy="22" rx="5" ry="6" fill="#FFFFFF"/>
+      </g>
+      <g opacity="0.9">
+        <path d="M20 60C30 72 50 72 60 60" fill="none" stroke="#394E6B" stroke-width="8" stroke-linecap="round" opacity="0.88"/>
+        <path d="M24 58C32 66 48 66 56 58" fill="none" stroke="#FDFBFF" stroke-width="3" stroke-linecap="round" opacity="0.65"/>
+      </g>
+    </g>
+  </g>
+</svg>
+
