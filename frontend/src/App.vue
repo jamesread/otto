@@ -16,12 +16,22 @@ import {
   type DeleteItemRequest,
 } from './gen/sickrock_pb';
 import { createSickRockClient } from './lib/sickrockClient';
+import {
+  getBackupDirectoryName,
+  requestBackupDirectory,
+} from './lib/filesystemBackend';
+import {
+  createFilesystemStubClient,
+  TASKS_BACKEND_STORAGE_KEY,
+  type TasksBackendType,
+} from './lib/tasksBackend';
 import { BUILD_VERSION, BUILD_COMMIT, BUILD_DATE } from './buildinfo.js';
 
 const STORAGE_KEYS = {
   baseUrl: 'otto-base-url',
   token: 'otto-token',
   pendingItems: 'otto-pending-items',
+  tasksBackend: TASKS_BACKEND_STORAGE_KEY,
 } as const;
 
 /** Offline-created item stored in localStorage until synced to server. Item-compatible for display. */
@@ -37,6 +47,7 @@ const username = ref('');
 const password = ref('');
 const token = ref<string | null>(null);
 const statusItems = ref<Item[]>([]);
+const projectsItems = ref<Item[]>([]);
 const isLoading = ref(false);
 const errorMessage = ref<string | null>(null);
 const showConnectionUI = ref(true);
@@ -46,16 +57,24 @@ const itemNameInputRef = ref<HTMLInputElement | null>(null);
 const feelingInput = ref('');
 const feelingInputRef = ref<HTMLInputElement | null>(null);
 const tagsInput = ref('');
+const projectInput = ref('');
+const parentActionInput = ref('');
 const showCreateDialog = ref(false);
 const newItemName = ref('');
 const newItemFeeling = ref('');
 const newItemTags = ref('');
+const newItemProject = ref('');
+const newItemParentAction = ref('');
 const newItemNameInputRef = ref<HTMLInputElement | null>(null);
 const filterQuery = ref('');
 const itemToDelete = ref<Item | null>(null);
 const showDeleteConfirmation = ref(false);
 const showOptionsMenu = ref(false);
 const showBuildInfoModal = ref(false);
+const showBackendDialog = ref(false);
+const backendType = ref<TasksBackendType>('connectrpc');
+const backupFolderName = ref<string | null>(null);
+const isChoosingFolder = ref(false);
 const pendingLocalItems = ref<PendingLocalItem[]>([]);
 const isOnline = ref(typeof navigator !== 'undefined' ? navigator.onLine : true);
 const REFRESH_INTERVAL_SECONDS = 30;
@@ -81,6 +100,11 @@ if (typeof window !== 'undefined') {
     token.value = storedToken;
     window.localStorage.setItem(STORAGE_KEYS.token, storedToken);
     window.localStorage.removeItem(LEGACY_KEYS.token);
+  }
+
+  const storedBackend = window.localStorage.getItem(STORAGE_KEYS.tasksBackend);
+  if (storedBackend === 'connectrpc' || storedBackend === 'filesystem') {
+    backendType.value = storedBackend;
   }
 }
 
@@ -111,6 +135,32 @@ watch(token, (value) => {
   }
   window.localStorage.removeItem(LEGACY_KEYS.token);
 });
+
+watch(backendType, (value) => {
+  if (typeof window !== 'undefined') {
+    window.localStorage.setItem(STORAGE_KEYS.tasksBackend, value);
+  }
+  void refreshStatusItems();
+  if (value === 'filesystem') {
+    void loadBackupFolderName();
+  } else {
+    backupFolderName.value = null;
+  }
+});
+
+function getTasksClient() {
+  if (backendType.value === 'filesystem') {
+    return createFilesystemStubClient();
+  }
+  const credentials = needsAuth.value
+    ? { username: username.value.trim(), password: password.value }
+    : undefined;
+  return createSickRockClient(
+    needsAuth.value ? effectiveBaseUrl.value : undefined,
+    credentials,
+    token.value,
+  );
+}
 
 function loadPendingFromStorage(): void {
   if (typeof window === 'undefined') return;
@@ -310,6 +360,26 @@ const getItemName = (item: Item): string => {
   return 'Untitled task';
 };
 
+const getItemProjectId = (item: Item): string => {
+  const raw = item.additionalFields?.project;
+  return typeof raw === 'string' ? raw.trim() : '';
+};
+
+const getItemParentActionId = (item: Item): string => {
+  const raw = item.additionalFields?.parent_action;
+  return typeof raw === 'string' ? raw.trim() : '';
+};
+
+const getProjectById = (id: string): Item | undefined => {
+  if (!id) return undefined;
+  return projectsItems.value.find((p) => p.id === id);
+};
+
+const getProjectDisplayName = (id: string): string => {
+  const project = getProjectById(id);
+  return project ? getItemName(project) : '';
+};
+
 const getItemSuggestion = (item: Item): string | null => {
   const fields = item.additionalFields ?? {};
   const suggestion = fields.suggestion || fields.Suggestion;
@@ -364,17 +434,24 @@ function isPendingLocalItem(item: Item | PendingLocalItem): boolean {
   return pendingLocalItems.value.some((p) => p.id === item.id);
 }
 
+const parentActionOptions = computed(() => {
+  const excludeId = editingItem.value?.id ?? null;
+  const entries = allItemsForFilter.value.filter((e) => e.item.id !== excludeId);
+  return entries.map((e) => ({ id: e.item.id, name: getItemName(e.item) }));
+});
+
 const attemptInitialInit = async (): Promise<boolean> => {
+  if (backendType.value === 'filesystem') {
+    showConnectionUI.value = false;
+    await refreshStatusItems();
+    return true;
+  }
   if (!token.value) {
     return false;
   }
 
   try {
-    const client = createSickRockClient(
-      needsAuth.value ? effectiveBaseUrl.value : undefined,
-      undefined,
-      token.value,
-    );
+    const client = getTasksClient();
     const initResponse = await client.init({});
     showConnectionUI.value = false;
 
@@ -438,6 +515,26 @@ async function refreshStatusItems() {
     showConnectionUI.value = true;
   }
 
+  if (backendType.value === 'filesystem') {
+    const client = getTasksClient();
+    const response = await client.listItems(
+      createListItemsRequest({ tcName: 'status', where: {} }),
+    );
+    statusItems.value = response.items;
+    try {
+      const projectsResponse = await client.listItems(
+        createListItemsRequest({ tcName: 'projects', where: {} }),
+      );
+      projectsItems.value = projectsResponse.items;
+    } catch {
+      projectsItems.value = [];
+    }
+    showConnectionUI.value = false;
+    isLoading.value = false;
+    beginAutoRefresh();
+    return;
+  }
+
   const sanitizedUsername = username.value.trim();
   const sanitizedPassword = password.value;
 
@@ -463,12 +560,8 @@ async function refreshStatusItems() {
     return;
   }
 
-  const runListItems = async (): Promise<ListItemsResponse> => {
-    let client = createSickRockClient(
-      needsAuth.value ? effectiveBaseUrl.value : undefined,
-      credentials,
-      token.value,
-    );
+  const runListItems = async (): Promise<{ response: ListItemsResponse; client: ReturnType<typeof getTasksClient> }> => {
+    let client = getTasksClient();
 
     if (needsAuth.value && credentials && !token.value) {
       const loginResponse = await client.login({
@@ -481,19 +574,16 @@ async function refreshStatusItems() {
       }
 
       token.value = loginResponse.token;
-      client = createSickRockClient(
-        effectiveBaseUrl.value,
-        credentials,
-        token.value,
-      );
+      client = getTasksClient();
     }
 
-    return client.listItems(
+    const response = await client.listItems(
       createListItemsRequest({
         tcName: 'status',
         where: {},
       }),
     );
+    return { response, client };
   };
 
   const handleError = (error: unknown) => {
@@ -503,11 +593,20 @@ async function refreshStatusItems() {
       errorMessage.value = String(error);
     }
     statusItems.value = [];
+    projectsItems.value = [];
   };
 
   try {
-    const response = await runListItems();
+    const { response, client } = await runListItems();
     statusItems.value = response.items;
+    try {
+      const projectsResponse = await client.listItems(
+        createListItemsRequest({ tcName: 'projects', where: {} }),
+      );
+      projectsItems.value = projectsResponse.items;
+    } catch {
+      projectsItems.value = [];
+    }
     showConnectionUI.value = false;
   } catch (error) {
     if (
@@ -517,8 +616,16 @@ async function refreshStatusItems() {
     ) {
       token.value = null;
       try {
-        const response = await runListItems();
+        const { response, client } = await runListItems();
         statusItems.value = response.items;
+        try {
+          const projectsResponse = await client.listItems(
+            createListItemsRequest({ tcName: 'projects', where: {} }),
+          );
+          projectsItems.value = projectsResponse.items;
+        } catch {
+          projectsItems.value = [];
+        }
         showConnectionUI.value = false;
         return;
       } catch (retryError) {
@@ -540,7 +647,7 @@ const handleSubmit = async () => {
 };
 
 async function syncPendingItemsToServer(): Promise<void> {
-  if (!isOnline.value || pendingLocalItems.value.length === 0) {
+  if (backendType.value === 'filesystem' || !isOnline.value || pendingLocalItems.value.length === 0) {
     return;
   }
   const sanitizedUsername = username.value.trim();
@@ -550,11 +657,7 @@ async function syncPendingItemsToServer(): Promise<void> {
   if (needsAuth.value && (!credentials?.username || !credentials?.password)) {
     return;
   }
-  let client = createSickRockClient(
-    needsAuth.value ? effectiveBaseUrl.value : undefined,
-    credentials,
-    token.value,
-  );
+  let client = getTasksClient();
   if (needsAuth.value && credentials && !token.value) {
     try {
       const loginResponse = await client.login({
@@ -563,7 +666,7 @@ async function syncPendingItemsToServer(): Promise<void> {
       });
       if (!loginResponse.token) return;
       token.value = loginResponse.token;
-      client = createSickRockClient(effectiveBaseUrl.value, credentials, token.value);
+      client = getTasksClient();
     } catch {
       return;
     }
@@ -605,6 +708,8 @@ const handleItemClick = (item: Item) => {
   itemNameInput.value = getItemName(item);
   feelingInput.value = item.additionalFields?.feeling || '';
   tagsInput.value = item.additionalFields?.tags || '';
+  projectInput.value = getItemProjectId(item);
+  parentActionInput.value = getItemParentActionId(item);
 };
 
 const handleItemRightClick = (event: MouseEvent, item: Item) => {
@@ -643,11 +748,7 @@ const confirmDelete = async () => {
         }
       : undefined;
 
-    let client = createSickRockClient(
-      needsAuth.value ? effectiveBaseUrl.value : undefined,
-      credentials,
-      token.value,
-    );
+    let client = getTasksClient();
 
     if (needsAuth.value && credentials && !token.value) {
       const loginResponse = await client.login({
@@ -660,11 +761,7 @@ const confirmDelete = async () => {
       }
 
       token.value = loginResponse.token;
-      client = createSickRockClient(
-        effectiveBaseUrl.value,
-        credentials,
-        token.value,
-      );
+      client = getTasksClient();
     }
 
     const request = createDeleteItemRequest({
@@ -698,6 +795,8 @@ const cancelEdit = () => {
   itemNameInput.value = '';
   feelingInput.value = '';
   tagsInput.value = '';
+  projectInput.value = '';
+  parentActionInput.value = '';
 };
 
 /** Build shareable task text (all fields) for sharing to a chat LLM. */
@@ -759,6 +858,10 @@ const saveItem = async () => {
         tags: tagsInput.value,
       };
       if (nameValue) additionalFields.name = nameValue;
+      if (projectInput.value) additionalFields.project = projectInput.value;
+      else delete additionalFields.project;
+      if (parentActionInput.value) additionalFields.parent_action = parentActionInput.value;
+      else delete additionalFields.parent_action;
       pendingLocalItems.value[idx] = { ...pendingLocalItems.value[idx], additionalFields };
       savePendingToStorage();
     }
@@ -780,11 +883,7 @@ const saveItem = async () => {
         }
       : undefined;
 
-    let client = createSickRockClient(
-      needsAuth.value ? effectiveBaseUrl.value : undefined,
-      credentials,
-      token.value,
-    );
+    let client = getTasksClient();
 
     if (needsAuth.value && credentials && !token.value) {
       const loginResponse = await client.login({
@@ -797,11 +896,7 @@ const saveItem = async () => {
       }
 
       token.value = loginResponse.token;
-      client = createSickRockClient(
-        effectiveBaseUrl.value,
-        credentials,
-        token.value,
-      );
+      client = getTasksClient();
     }
 
     const now = new Date();
@@ -820,10 +915,19 @@ const saveItem = async () => {
       last_human_update: formattedTimestamp,
     };
 
-    // Update the name field
     const nameValue = itemNameInput.value.trim();
     if (nameValue) {
       additionalFields.name = nameValue;
+    }
+    if (projectInput.value) {
+      additionalFields.project = projectInput.value;
+    } else {
+      delete additionalFields.project;
+    }
+    if (parentActionInput.value) {
+      additionalFields.parent_action = parentActionInput.value;
+    } else {
+      delete additionalFields.parent_action;
     }
 
     const request = createEditItemRequest({
@@ -865,6 +969,8 @@ const handleEscapeKey = (event: KeyboardEvent) => {
       cancelDelete();
     } else if (showBuildInfoModal.value) {
       showBuildInfoModal.value = false;
+    } else if (showBackendDialog.value) {
+      showBackendDialog.value = false;
     } else if (showOptionsMenu.value) {
       showOptionsMenu.value = false;
     }
@@ -880,11 +986,52 @@ const closeBuildInfo = () => {
   showBuildInfoModal.value = false;
 };
 
+const openBackendDialog = async () => {
+  showOptionsMenu.value = false;
+  showBackendDialog.value = true;
+  await loadBackupFolderName();
+};
+
+const closeBackendDialog = () => {
+  showBackendDialog.value = false;
+};
+
+async function loadBackupFolderName(): Promise<void> {
+  if (backendType.value !== 'filesystem') return;
+  try {
+    backupFolderName.value = await getBackupDirectoryName();
+  } catch {
+    backupFolderName.value = null;
+  }
+}
+
+async function chooseBackupFolder(): Promise<void> {
+  if (typeof window === 'undefined' || !window.showDirectoryPicker) {
+    errorMessage.value = 'File System Access API is not supported in this browser.';
+    return;
+  }
+  isChoosingFolder.value = true;
+  errorMessage.value = null;
+  try {
+    const handle = await requestBackupDirectory();
+    backupFolderName.value = handle?.name ?? null;
+    if (handle) {
+      await refreshStatusItems();
+    }
+  } catch (err) {
+    errorMessage.value = err instanceof Error ? err.message : String(err);
+  } finally {
+    isChoosingFolder.value = false;
+  }
+}
+
 const openCreateDialog = () => {
   showCreateDialog.value = true;
   newItemName.value = '';
   newItemFeeling.value = '';
   newItemTags.value = '';
+  newItemProject.value = '';
+  newItemParentAction.value = '';
 };
 
 const cancelCreate = () => {
@@ -892,6 +1039,8 @@ const cancelCreate = () => {
   newItemName.value = '';
   newItemFeeling.value = '';
   newItemTags.value = '';
+  newItemProject.value = '';
+  newItemParentAction.value = '';
 };
 
 const createItem = async () => {
@@ -909,6 +1058,12 @@ const createItem = async () => {
     }
     if (newItemTags.value.trim()) {
       additionalFields.tags = newItemTags.value.trim();
+    }
+    if (newItemProject.value.trim()) {
+      additionalFields.project = newItemProject.value.trim();
+    }
+    if (newItemParentAction.value.trim()) {
+      additionalFields.parent_action = newItemParentAction.value.trim();
     }
     const pending: PendingLocalItem = {
       id: typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `local-${Date.now()}`,
@@ -934,11 +1089,7 @@ const createItem = async () => {
         }
       : undefined;
 
-    let client = createSickRockClient(
-      needsAuth.value ? effectiveBaseUrl.value : undefined,
-      credentials,
-      token.value,
-    );
+    let client = getTasksClient();
 
     if (needsAuth.value && credentials && !token.value) {
       const loginResponse = await client.login({
@@ -951,11 +1102,7 @@ const createItem = async () => {
       }
 
       token.value = loginResponse.token;
-      client = createSickRockClient(
-        effectiveBaseUrl.value,
-        credentials,
-        token.value,
-      );
+      client = getTasksClient();
     }
 
     const additionalFields: { [key: string]: string } = {
@@ -968,6 +1115,14 @@ const createItem = async () => {
 
     if (newItemTags.value.trim()) {
       additionalFields.tags = newItemTags.value.trim();
+    }
+
+    if (newItemProject.value.trim()) {
+      additionalFields.project = newItemProject.value.trim();
+    }
+
+    if (newItemParentAction.value.trim()) {
+      additionalFields.parent_action = newItemParentAction.value.trim();
     }
 
     const request = createCreateItemRequest({
@@ -1027,6 +1182,14 @@ watch(showBuildInfoModal, (isShowing) => {
 });
 
 watch(showOptionsMenu, (isShowing) => {
+  if (isShowing) {
+    window.addEventListener('keydown', handleEscapeKey);
+  } else {
+    window.removeEventListener('keydown', handleEscapeKey);
+  }
+});
+
+watch(showBackendDialog, (isShowing) => {
   if (isShowing) {
     window.addEventListener('keydown', handleEscapeKey);
   } else {
@@ -1146,12 +1309,13 @@ onUnmounted(() => {
           <li
             v-for="(entry, index) in filteredStatusItems"
             :key="entry.item.id || index"
-            :class="['items-list-entry', getKarmaClass(entry.item), { 'item-local-only': entry.isLocalOnly }]"
+            :class="['items-list-entry', getKarmaClass(entry.item), { 'item-local-only': entry.isLocalOnly, 'item-has-parent': getItemParentActionId(entry.item) }]"
             @click="handleItemClick(entry.item)"
             @contextmenu="handleItemRightClick($event, entry.item)"
           >
             <div class="item-body">
               <div class="item-content">
+                <span v-if="getProjectDisplayName(getItemProjectId(entry.item))" class="item-project-label">{{ getProjectDisplayName(getItemProjectId(entry.item)) }}</span>
                 <span class="item-name">{{ getItemName(entry.item) }}</span>
                 <span
                   v-if="getItemSuggestion(entry.item) !== null"
@@ -1234,6 +1398,42 @@ onUnmounted(() => {
             @keyup.esc="cancelEdit"
           />
         </div>
+        <div class="field">
+          <label for="edit-project-select" class="field-label">Project</label>
+          <select
+            id="edit-project-select"
+            v-model="projectInput"
+            class="base-url-input"
+            :disabled="isLoading"
+          >
+            <option value="">None</option>
+            <option
+              v-for="proj in projectsItems"
+              :key="proj.id"
+              :value="proj.id"
+            >
+              {{ getItemName(proj) }}
+            </option>
+          </select>
+        </div>
+        <div v-if="backendType !== 'filesystem'" class="field">
+          <label for="edit-parent-action-select" class="field-label">Parent action</label>
+          <select
+            id="edit-parent-action-select"
+            v-model="parentActionInput"
+            class="base-url-input"
+            :disabled="isLoading"
+          >
+            <option value="">None</option>
+            <option
+              v-for="opt in parentActionOptions"
+              :key="opt.id"
+              :value="opt.id"
+            >
+              {{ opt.name }}
+            </option>
+          </select>
+        </div>
         <div class="actions">
           <button type="button" :disabled="isLoading" @click="saveItem">
             {{ isLoading ? 'Saving…' : 'Save' }}
@@ -1259,7 +1459,7 @@ onUnmounted(() => {
       @click.self="cancelCreate"
     >
       <div class="edit-modal">
-        <h3>Create</h3>
+        <h3>Capture</h3>
         <div class="field">
           <input
             id="new-item-name-input"
@@ -1296,9 +1496,45 @@ onUnmounted(() => {
             @keyup.esc="cancelCreate"
           />
         </div>
+        <div class="field">
+          <label for="new-item-project-select" class="field-label">Project</label>
+          <select
+            id="new-item-project-select"
+            v-model="newItemProject"
+            class="base-url-input"
+            :disabled="isLoading"
+          >
+            <option value="">None</option>
+            <option
+              v-for="proj in projectsItems"
+              :key="proj.id"
+              :value="proj.id"
+            >
+              {{ getItemName(proj) }}
+            </option>
+          </select>
+        </div>
+        <div v-if="backendType !== 'filesystem'" class="field">
+          <label for="new-item-parent-action-select" class="field-label">Parent action</label>
+          <select
+            id="new-item-parent-action-select"
+            v-model="newItemParentAction"
+            class="base-url-input"
+            :disabled="isLoading"
+          >
+            <option value="">None</option>
+            <option
+              v-for="opt in parentActionOptions"
+              :key="opt.id"
+              :value="opt.id"
+            >
+              {{ opt.name }}
+            </option>
+          </select>
+        </div>
         <div class="actions">
           <button type="button" :disabled="isLoading" @click="createItem">
-            {{ isLoading ? 'Creating…' : 'Save' }}
+            {{ isLoading ? 'Capturing…' : 'Save' }}
           </button>
           <button type="button" class="secondary" :disabled="isLoading" @click="cancelCreate">
             Cancel
@@ -1451,6 +1687,9 @@ onUnmounted(() => {
           Options
         </button>
         <div v-if="showOptionsMenu" class="options-menu" role="menu">
+          <button type="button" role="menuitem" class="options-menu-item" @click="openBackendDialog">
+            Backend
+          </button>
           <button type="button" role="menuitem" class="options-menu-item" @click="openBuildInfo">
             Build info
           </button>
@@ -1475,6 +1714,62 @@ onUnmounted(() => {
       </dl>
       <div class="actions">
         <button type="button" class="secondary" @click="closeBuildInfo">
+          Close
+        </button>
+      </div>
+    </div>
+  </div>
+  <div
+    v-if="showBackendDialog"
+    class="edit-modal-overlay"
+    @click.self="closeBackendDialog"
+  >
+    <div class="edit-modal">
+      <h3>Backend</h3>
+      <p class="subtitle">Choose where tasks are stored and loaded from.</p>
+      <div class="field backend-options">
+        <label class="backend-option">
+          <span class="backend-option-row">
+            <input
+              v-model="backendType"
+              type="radio"
+              value="connectrpc"
+              name="tasks-backend"
+            />
+            <span>ConnectRPC API</span>
+          </span>
+          <span class="backend-option-desc">Use the SickRock server (current).</span>
+        </label>
+        <label class="backend-option">
+          <span class="backend-option-row">
+            <input
+              v-model="backendType"
+              type="radio"
+              value="filesystem"
+              name="tasks-backend"
+            />
+            <span>Local filesystem (todo.txt)</span>
+          </span>
+          <span class="backend-option-desc">Read/write todo.txt in a folder you choose (todotxt.org format).</span>
+        </label>
+      </div>
+      <div v-if="backendType === 'filesystem'" class="field backup-folder-section">
+        <label class="field-label">Backup folder</label>
+        <p v-if="backupFolderName" class="backup-folder-name">
+          <code>{{ backupFolderName }}</code>
+        </p>
+        <p v-else class="backup-folder-hint">Choose a folder containing (or that will contain) <code>todo.txt</code>.</p>
+        <button
+          type="button"
+          class="secondary"
+          :disabled="isChoosingFolder"
+          @click="chooseBackupFolder"
+        >
+          {{ isChoosingFolder ? 'Opening…' : backupFolderName ? 'Change folder' : 'Choose backup folder' }}
+        </button>
+      </div>
+      <div class="actions">
+        <button type="button" class="secondary" @click="closeBackendDialog">
           Close
         </button>
       </div>
@@ -1521,6 +1816,12 @@ onUnmounted(() => {
   display: grid;
   gap: 0.5rem;
   text-align: left;
+}
+
+.field-label {
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: #475569;
 }
 
 .base-url-input {
@@ -1619,7 +1920,6 @@ code {
 }
 
 .card {
-  max-width: 480px;
   margin: 0 auto;
   padding: 1.5rem;
   border-radius: 1rem;
@@ -1738,6 +2038,11 @@ code {
   box-shadow: inset 0 0 0 1px rgba(239, 68, 68, 0.12);
 }
 
+.items-list-entry.item-has-parent {
+  margin-left: 1.25rem;
+  border-left: 3px solid rgba(37, 99, 235, 0.25);
+}
+
 .item-body {
   display: flex;
   flex-wrap: wrap;
@@ -1751,6 +2056,14 @@ code {
   flex-direction: column;
   gap: 0.35rem;
   flex: 1;
+}
+
+.item-project-label {
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #64748b;
 }
 
 .item-name {
@@ -2039,5 +2352,60 @@ code {
   margin: 0.2rem 0 0 0;
   color: #1f2933;
   word-break: break-all;
+}
+
+.backend-options {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  margin: 1rem 0 1.5rem 0;
+}
+
+.backend-option {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  padding: 0.75rem 1rem;
+  border-radius: 0.5rem;
+  border: 1px solid rgba(15, 23, 42, 0.12);
+  cursor: pointer;
+  background: rgba(255, 255, 255, 0.6);
+}
+
+.backend-option:hover {
+  background: rgba(255, 255, 255, 0.9);
+}
+
+.backend-option-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.backend-option input {
+  flex-shrink: 0;
+}
+
+.backend-option-desc {
+  font-size: 0.85rem;
+  color: #64748b;
+  margin-left: 1.5rem;
+}
+
+.backup-folder-section {
+  margin-top: 0.5rem;
+  padding-top: 1rem;
+  border-top: 1px solid rgba(15, 23, 42, 0.1);
+}
+
+.backup-folder-name {
+  margin: 0.5rem 0;
+  font-size: 0.9rem;
+}
+
+.backup-folder-hint {
+  margin: 0.5rem 0;
+  font-size: 0.85rem;
+  color: #64748b;
 }
 </style>
